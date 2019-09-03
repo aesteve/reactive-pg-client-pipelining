@@ -21,12 +21,10 @@ object Application {
     private val setupConn = setupPool.rxGetConnection().blockingGet()
 
     private val noPipeliningOpts = getOpts(1)
-    private val noPipeliningPool = PgPool.pool(vertx, noPipeliningOpts, PoolOptions().setMaxSize(200))
-    private val noPipeliningConn = noPipeliningPool.rxGetConnection().blockingGet()
+    private val noPipeliningPool = PgPool.pool(vertx, noPipeliningOpts, PoolOptions().setMaxSize(10))
 
     private val maxPipeliningOpts = getOpts(Integer.MAX_VALUE)
-    private val maxPipeliningPool = PgPool.pool(vertx, maxPipeliningOpts, PoolOptions().setMaxSize(200))
-    private val maxPipeliningConn = maxPipeliningPool.rxGetConnection().blockingGet()
+    private val maxPipeliningPool = PgPool.pool(vertx, maxPipeliningOpts, PoolOptions().setMaxSize(10))
 
     private const val table = "huge"
     private const val col = "the_column"
@@ -67,12 +65,12 @@ object Application {
         val toSelect = (1..nbItemsToSelectForPipelining).toList()
         println("Running ${toSelect.size} SELECTs from DB")
         var before = System.currentTimeMillis()
-        return executeQueries(maxPipeliningConn, toSelect)
+        return executeQueries(maxPipeliningPool, toSelect)
             .flatMap {
                 assert(it.toList().toSet() == toSelect.toSet())
                 println("With pipelining, SELECTs took ${System.currentTimeMillis() - before}")
                 before = System.currentTimeMillis()
-                executeQueries(noPipeliningConn, toSelect)
+                executeQueries(noPipeliningPool, toSelect)
             }
             .map {
                 assert(it.toList().toSet() == toSelect.toSet())
@@ -86,7 +84,7 @@ object Application {
         val toSelect = (1..nbItemsToSelectForConcurrSequential).toList()
         val nbRuns = 100
         for (i in 1..nbRuns) {
-            executeQueries(maxPipeliningConn, toSelect).blockingGet()
+            executeQueries(maxPipeliningPool, toSelect).blockingGet()
         }
         return Single.just((System.currentTimeMillis() - before).toDouble() / nbRuns)
     }
@@ -99,7 +97,7 @@ object Application {
             .fromIterable(1..nbRuns)
             .flatMapSingle {
                 val before = System.currentTimeMillis()
-                executeQueries(maxPipeliningConn, toSelect)
+                executeQueries(maxPipeliningPool, toSelect)
                     .map { System.currentTimeMillis() - before }
             }
             .reduce(listOf(), timesAgg)
@@ -120,13 +118,20 @@ object Application {
             .setPassword("mysecretpassword")
             .setDatabase("postgres")
 
-    private fun executeQueries(conn: SqlConnection, toSelect: List<Int>): Single<List<Row>> =
-        Observable
-            .fromIterable(toSelect)
-            .flatMapSingle {
-                conn.rxPreparedQuery("SELECT $col FROM $table WHERE $col = $1", Tuple.of(it))
+    private fun executeQueries(pool: PgPool, toSelect: List<Int>): Single<List<Row>> {
+        var conn: SqlConnection? = null
+        return pool.rxGetConnection()
+            .flatMap {
+                conn = it
+                Observable
+                    .fromIterable(toSelect)
+                    .flatMapSingle {
+                        conn?.rxPreparedQuery("SELECT $col FROM $table WHERE $col = $1", Tuple.of(it))
+                    }
+                    .reduce(listOf(), agg)
             }
-            .reduce(listOf(), agg)
+            .doFinally { conn?.close() }
+    }
 
     private val agg: BiFunction<List<Row>, RowSet, List<Row>> = BiFunction { list, rs ->
         list + rs
