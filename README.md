@@ -27,6 +27,8 @@ This part is the typical setup phase:
 -------
 
 Then the actual first tests happen.
+
+
 Two methods are using two different connections obtained from different pools:
 * the first one is using pipelining (`pipeliningLimit = Integer.MAX_VALUE`)
 * the second one is not (`pipeliningLimit = 1`)
@@ -46,6 +48,8 @@ Sounds logical if pipelining is used, there's a single round-trip to the DB.
 
 ------ 
 Second test phase.
+
+
 In this phase, we try to run "multi-selects" (only 100 SELECTS, this time) with a connection using pipelining, but in two different ways.
 
 1. sequentially: we run the 100 selects, wait for results, then continue (100 times)
